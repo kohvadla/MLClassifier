@@ -8,25 +8,24 @@ import itertools
 import h5py
 
 import numpy as np
+
 from keras.models import Sequential, load_model
-from sklearn import preprocessing
+from keras.layers import Dense, Activation
+from keras.wrappers.scikit_learn import KerasClassifier
+
+from sklearn import preprocessing, metrics
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import AdaBoostClassifier
-
-from ROOT import gROOT, gDirectory, TFile, TEventList, TCut
+from sklearn.metrics import roc_curve, roc_auc_score, precision_recall_curve, confusion_matrix, classification_report
+from sklearn.externals import joblib
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.utils import shuffle
 
 import matplotlib.mlab as mlab
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from mpl_toolkits.axes_grid1 import make_axes_locatable, axes_size
 
-from sklearn import metrics
-from sklearn.metrics import roc_curve, roc_auc_score, precision_recall_curve, confusion_matrix, classification_report
-from sklearn.externals import joblib
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.utils import shuffle
-
-from CommonTools import reconstructionError,reconstructionErrorByFeature,buildArraysFromROOT,makeMetrics,areaUnderROC
 from featuresLists import features 
 
 import logging
@@ -44,7 +43,7 @@ runNN = False
 runTraining = True
 use_event_weights = True
 log_y = True
-gridSearchCV = False
+doGridSearchCV = False
 
 parser = argparse.ArgumentParser(description='Run classifier -- BDT or neural network')
 group = parser.add_mutually_exclusive_group()
@@ -53,7 +52,7 @@ group.add_argument('-n', '--nn', action='store_true', help='Run with neural netw
 parser.add_argument('-t', '--no_training', action='store_false', help='Do not train the selected classifier')
 parser.add_argument('-w', '--no_event_weights', action='store_false', help='Do not apply event weights to training examples')
 parser.add_argument('-l', '--no_log_y', action='store_false', help='Do not use log scale on y-axis')
-parser.add_argument('-g', '--gridSearchCV', action='store_true', help='Run tuning of hyperparameters for the BDT')
+parser.add_argument('-g', '--doGridSearchCV', action='store_true', help='Perform tuning of hyperparameters using k-fold cross-validation')
 
 args = parser.parse_args()
 
@@ -64,7 +63,7 @@ elif args.nn:
 elif args.bdt and args.nn:
     runBDT = args.bdt
     runNN = False
-    print "INVALID CLASSIFIER CHOICE! Both bdt and nn are chosen. Reverting to run only bdt."
+    print "\nINVALID CLASSIFIER CHOICE! Both bdt and nn are chosen. Reverting to run only bdt."
 else:
     sys.exit("Classifier argument not given! Choose either -b for BDT or -n for neural network.")
 if not(args.no_training):
@@ -73,13 +72,16 @@ if not(args.no_event_weights):
     use_event_weights = args.no_event_weights
 if not(args.no_log_y):
     log_y = args.no_log_y
-if args.gridSearchCV:
-    gridSearchCV = args.gridSearchCV
+if args.doGridSearchCV:
+    doGridSearchCV = args.doGridSearchCV
 
 if use_event_weights:
-    print "INFO Applying event weights to the examples during training"
+    print "\nINFO Applying event weights to the examples during training"
 else:
-    print "INFO Not applying event weights to the examples during training"
+    print "\nINFO Not applying event weights to the examples during training"
+
+if doGridSearchCV:
+    print "INFO Performing grid search for hyperparameters"
 
 #selectedFeatures = features
 unselectedFeatures = ['dsid']
@@ -87,9 +89,9 @@ event_weight_feature = ['event_weight']
 
 in_selectedFeatures = np.array([i not in unselectedFeatures for i in features])
 selectedFeatures = (np.array(features)[in_selectedFeatures]).tolist()
-print "selectedFeatures =", selectedFeatures 
+print "\nselectedFeatures =", selectedFeatures 
 n_selectedFeatures = len(features) - len(unselectedFeatures)
-print "n_selectedFeatures =", n_selectedFeatures 
+#print "n_selectedFeatures =", n_selectedFeatures 
 
 
 # Build background arrays
@@ -106,40 +108,30 @@ sigFile.close()
 # Draw a number of signal and background samples, equal to the size of the signal dataset, randomly from the datasets
 X_sig_shuffled = shuffle(X_sig, random_state=None, n_samples=None)
 X_bkg_shuffled = shuffle(X_bkg, random_state=None, n_samples=X_sig_shuffled.shape[0])
-print "X_sig_shuffled.shape",X_sig_shuffled.shape
-print "X_bkg_shuffled.shape",X_bkg_shuffled.shape
 
 X = np.concatenate((X_bkg_shuffled, X_sig_shuffled), 0)
-print "Before deleting event weight column: X.shape",X.shape
 
 # Make array of labels
 y_bkg = np.zeros(X_bkg_shuffled.shape[0])
 y_sig = np.ones(X_sig_shuffled.shape[0])
 y = np.concatenate((y_bkg, y_sig),0)
 y = np.ravel(y)
-print "y.shape",y.shape
 
 # Split dataset in train and test sets
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=None, shuffle=True, stratify=None)
-print "X_train.shape",X_train.shape
-print "X_test.shape",X_test.shape
-print "y_train.shape",y_train.shape,"np.sum(y_train)",np.sum(y_train)
-print "y_test.shape",y_test.shape,"np.sum(y_test)",np.sum(y_test)
+y_test = y_test.astype(int) # convert labels from float to int
 
 # Remove event weights from training features and store in separate array
 event_weights = X_train[:,-1] #X[:,is_event_weight]
-print "event_weights.shape",event_weights.shape
 X_train = X_train[:,:-1] #np.delete(X, is_event_weight, 1)
-print "After removing event weight column: X_train.shape",X_train.shape
 X_test = X_test[:,:-1] #np.delete(X, is_event_weight, 1)
-print "After removing event weight column: X_test.shape",X_test.shape
 
-print "*******************************************"
+print ""
 print "Number of background examples for training =", y_train[y_train==0].shape[0]  
 print "Number of background examples for testing =", y_test[y_test==0].shape[0]  
 print "Number of signal examples for training =", y_train[y_train==1].shape[0]  
 print "Number of signal examples for testing =", y_test[y_test==1].shape[0]  
-print "*******************************************"
+print ""
 
 
 # Feature scaling
@@ -148,22 +140,19 @@ X_train = min_max_scaler.fit_transform(X_train)
 X_test = min_max_scaler.transform(X_test)
 
 
-#skfold = StratifiedKFold(n_splits=2, shuffle=False, random_state=None)
-#for train_index, val_index in skfold.split(X_train, y_train):
-
-tuned_parameters_bdt = [{'base_estimator': [DecisionTreeClassifier(max_depth=1)], 'n_estimators': [10, 100, 1000], 'learning_rate': [0.1, 1.0, 10.0]}]
-
 #for score in scores:  
 # BDT TRAINING AND TESTING
 if runBDT:
     if runTraining:
         print "Building and training BDT"
 
-        if not(gridSearchCV):
+        if doGridSearchCV:
+            tuned_parameters = [{'base_estimator': [DecisionTreeClassifier(max_depth=1)], 'n_estimators': [10, 100, 1000], 
+                                    'learning_rate': [0.1, 1.0, 10.0]}]
+            clf = GridSearchCV( AdaBoostClassifier(), tuned_parameters, cv=3, scoring=None )
+        else:
             clf = AdaBoostClassifier( base_estimator=DecisionTreeClassifier(max_depth=1), n_estimators=100, 
                                       learning_rate=1.0, algorithm='SAMME.R', random_state=None )
-        else:
-            clf = GridSearchCV( AdaBoostClassifier(), tuned_parameters_bdt, cv=3, scoring=None )
 
         params = clf.get_params()
         print "params",params
@@ -173,27 +162,6 @@ if runBDT:
         else:
             clf.fit(X_train,y_train)
         joblib.dump(clf, 'bdt_AC18.pkl')
-
-        if gridSearchCV:
-            print "Best parameters set found on development set:"
-            print ""
-            print "clf.best_params_", clf.best_params_
-            print ""
-            print "Grid scores on development set:"
-            means = clf.cv_results_['mean_test_score']
-            stds = clf.cv_results_['std_test_score']
-            for mean, std, params in zip(means, stds, clf.cv_results_['params']):
-                print "{0:0.3f} (+/-{1:0.03f}) for {2!r}".format(mean, std * 2, params)
-            print ""
-
-            print "Detailed classification report:"
-            print ""
-            print "The model is trained on the full development set."
-            print "The scores are computed on the full evaluation set."
-            print ""
-            y_true, y_pred = y_test, clf.predict(X_test)
-            print classification_report(y_true, y_pred)
-            print ""
 
     if not runTraining:
         print "Reading in pre-trained BDT"
@@ -213,39 +181,72 @@ if runBDT:
 if runNN:
     if runTraining:
         print "Building and training neural network"
-        model = Sequential()
-        from keras.layers import Dense, Activation
-        #model.add(Dense(59, input_dim=n_selectedFeatures))
-        model.add(Dense(X_train.shape[1], input_dim=X_train.shape[1]))
-        model.add(Activation("relu"))
-        model.add(Dense(1))
-        model.add(Activation("sigmoid"))
-        model.compile(optimizer=#"sgd",
-                    "rmsprop",
-                    #"Adagrad", 
-                    #"Adadelta",
-                    #"Adam",
-                    #"Adamax",
-                    #"Nadam",
-                      loss=#"mean_squared_error",
-                   "binary_crossentropy",
-                      #class_mode="binary",
-                      metrics=["accuracy"])
-        if use_event_weights:
-            model.fit(X_train, y_train, epochs=100, batch_size=100, sample_weight=event_weights, validation_split=0.33)
-        else:
-            model.fit(X_train,y_train, epochs=100, batch_size=100)
-        model.save("nn_AC18.h5")
 
-    if not runTraining:
+        if doGridSearchCV:
+            def create_model():
+                model = Sequential()
+                model.add(Dense(X_train.shape[1], input_dim=X_train.shape[1], activation="relu"))
+                model.add(Dense(1, activation="sigmoid"))
+                model.compile(optimizer="rmsprop", loss="binary_crossentropy", metrics=["accuracy"])
+                return model
+
+            model = KerasClassifier(build_fn=create_model, verbose=0)
+
+            batch_size = [10, 20, 40, 60, 80, 100]
+            epochs = [10, 50, 100]
+            param_grid = dict(batch_size=batch_size, epochs=epochs)
+            grid = GridSearchCV(estimator=model, param_grid=param_grid, n_jobs=-1)
+
+            if use_event_weights:
+                grid_result = grid.fit(X_train, y_train, epochs=100, batch_size=100, sample_weight=event_weights) #, validation_split=0.33)
+            else:
+                grid_result = grid.fit(X_train,y_train, epochs=100, batch_size=100)
+
+        elif not doGridSearchCV:
+            model = Sequential()
+            model.add(Dense(X_train.shape[1], input_dim=X_train.shape[1], activation="relu"))
+            model.add(Dense(1, activation="sigmoid"))
+            model.compile(optimizer="rmsprop", loss="binary_crossentropy", metrics=["accuracy"])
+
+            if use_event_weights:
+                model.fit(X_train, y_train, epochs=100, batch_size=100, sample_weight=event_weights) #, validation_split=0.33)
+            else:
+                model.fit(X_train,y_train, epochs=100, batch_size=100)
+
+            model.save("nn_AC18.h5")
+
+    elif not runTraining:
         print "Reading in pre-trained neural network"
         model = load_model("nn_AC18.h5")
 
-    # Testing
-    pred_train = model.predict_classes(X_train,batch_size=100)
-    pred_test = model.predict_classes(X_test,batch_size=100)
-    output_train = model.predict_proba(X_train,batch_size=100)
-    output_test = model.predict_proba(X_test,batch_size=100)
+    # Get class and probability predictions
+    if doGridSearchCV:
+        # Training
+        pred_train = grid.predict(X_train)
+        output_train = grid.predict_proba(X_train)
+        for i_row_train in range(output_train.shape[0]):
+            if y_train[i_row_train] == 0:
+                output_train[i_row_train] = output_train[i_row_train,0]
+            elif y_train[i_row_train] == 1:
+                output_train[i_row_train] = output_train[i_row_train,1]
+        output_train = output_train[:,0]
+
+        # Testing
+        pred_test = grid.predict(X_test)
+        output_test = grid.predict_proba(X_test) # array of shape (n,2)
+        for i_row_test in range(output_test.shape[0]):
+            if y_test[i_row_test] == 0:
+                output_test[i_row_test] = output_test[i_row_test,0]
+            elif y_test[i_row_test] == 1:
+                output_test[i_row_test] = output_test[i_row_test,1]
+        output_test = output_test[:,0]
+    else:
+        # Training
+        pred_train = model.predict_classes(X_train,batch_size=100)
+        output_train = model.predict_proba(X_train,batch_size=100)
+        # Testing
+        pred_test = model.predict_classes(X_test,batch_size=100)
+        output_test = model.predict_proba(X_test,batch_size=100)
 
 
 pred_train = np.ravel(pred_train)
@@ -253,7 +254,31 @@ output_train = np.ravel(output_train)
 pred_test = np.ravel(pred_test)
 output_test = np.ravel(output_test)
 
-print "\n"
+# Print results of grid search
+if doGridSearchCV:
+    if runNN:
+        clf = grid
+    print "Best parameters set found on development set:"
+    print ""
+    print "clf.best_params_", clf.best_params_
+    print ""
+    print "Grid scores on development set:"
+    means = clf.cv_results_['mean_test_score']
+    stds = clf.cv_results_['std_test_score']
+    for mean, std, params in zip(means, stds, clf.cv_results_['params']):
+        print "{0:0.3f} (+/-{1:0.03f}) for {2!r}".format(mean, std, params)
+    print ""
+
+    print "Detailed classification report:"
+    print ""
+    print "The model is trained on the full development set."
+    print "The scores are computed on the full evaluation set."
+    print ""
+    y_true, y_pred = y_test, clf.predict(X_test)
+    print classification_report(y_true, y_pred)
+    print ""
+
+#if not doGridSearchCV:
 print "Training sample...."
 print "  Signal identified as signal (%)        : ",100.0*np.sum(pred_train[y_train==1]==1.0)/(X_train[y_train==1].shape[0])
 print "  Signal identified as background (%)    : ",100.0*np.sum(pred_train[y_train==1]==0.0)/(X_train[y_train==1].shape[0])
@@ -290,6 +315,7 @@ elif runNN:
     axsA.set_xlabel("NN signal probability")
     bins = np.linspace(0.0, 1.0, 25)
 # Plot training output
+#if not doGridSearchCV:
 axsA.hist(output_train[y_train==0], bins, alpha=0.3, histtype='stepfilled', facecolor='blue', label='Background trained', normed=True)
 axsA.hist(output_train[y_train==1], bins, alpha=0.3, histtype='stepfilled', facecolor='red', label='Signal trained', normed=True)
 # Plot test output
@@ -304,7 +330,7 @@ pdf_pages.savefig(figA)
 # ROC
 fpr, tpr, thresholds = roc_curve(y_test, output_test, pos_label=1)
 auc = roc_auc_score(y_test, output_test)
-print "Area under ROC = ",auc
+print "\nArea under ROC = ",auc
 figB, axB1 = plt.subplots()
 #axB1,axB2 = axsB.ravel()
 axB1.plot(fpr, tpr, label='ROC curve')
@@ -320,7 +346,7 @@ pdf_pages.savefig(figB)
 
 # BDT
 # Variable importances
-if runBDT and not(gridSearchCV):
+if runBDT and not doGridSearchCV:
     y_pos = np.arange(X_train.shape[1])
     figC, axC1 = plt.subplots(1,1)
     axC1.barh(y_pos, 100.0*clf.feature_importances_, align='center', alpha=0.4)
@@ -334,7 +360,7 @@ if runBDT and not(gridSearchCV):
 
 # NEURAL NETWORK
 # Assess variable importance using weights method
-if runNN:
+if runNN and not doGridSearchCV:
     weights = np.array([])
     for layer in model.layers:
         if layer.name =="dense_1":
@@ -398,20 +424,23 @@ def plot_confusion_matrix(cm, classes,
 # Plot confusion matrices for training and test performance
 class_names = ['Background', 'Signal']
 
+#if not doGridSearchCV:
 # Compute confusion matrix for training
 cnf_matrix_train = confusion_matrix(y_train, pred_train)
 np.set_printoptions(precision=2)
 
 # Plot non-normalized confusion matrix for training
+print "\n----- TRAINING -----"
 figD, (axsD1, axsD2) = plt.subplots(2,1)
 #figD = plt.figure()
-plt.suptitle('Train')
+plt.suptitle('Confusion matrices for training set')
 plt.subplot(1,2,1)
 plot_confusion_matrix(cnf_matrix_train, classes=class_names,
                       title='Counts')
                       #title='Confusion matrix, without normalization')
 
-# Plot normalized confusion matrix for test
+# Plot normalized confusion matrix for training
+print ""
 plt.subplot(1,2,2)
 plot_confusion_matrix(cnf_matrix_train, classes=class_names, normalize=True,
                       title='Normalized')
@@ -425,14 +454,16 @@ cnf_matrix_test = confusion_matrix(y_test, pred_test)
 np.set_printoptions(precision=2)
 
 # Plot non-normalized confusion matrix for test
+print "\n----- TESTING -----"
 figE, (axsE1, axsE2) = plt.subplots(1,2)
-plt.suptitle('Test')
+plt.suptitle('Confusion matrices for test set')
 plt.subplot(1,2,1)
 plot_confusion_matrix(cnf_matrix_test, classes=class_names,
                       title='Counts')
                       #title='Confusion matrix, without normalization')
 
 # Plot normalized confusion matrix for test
+print ""
 plt.subplot(1,2,2)
 plot_confusion_matrix(cnf_matrix_test, classes=class_names, normalize=True,
                       title='Normalized')
@@ -442,4 +473,4 @@ pdf_pages.savefig(figE)
 
 pdf_pages.close()
 
-print "Plots saved to",output_filename
+print "\nPlots saved to",output_filename
