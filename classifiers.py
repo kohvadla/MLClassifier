@@ -8,6 +8,7 @@ import itertools
 import h5py
 
 import numpy as np
+import pandas as pd
 
 from keras.models import Sequential, load_model
 from keras.layers import Dense, Activation
@@ -18,7 +19,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import AdaBoostClassifier
 from sklearn.metrics import roc_curve, roc_auc_score, precision_recall_curve, confusion_matrix, classification_report
 from sklearn.externals import joblib
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split, GridSearchCV, validation_curve, learning_curve
 from sklearn.utils import shuffle
 
 import matplotlib.mlab as mlab
@@ -44,6 +45,7 @@ runTraining = True
 use_event_weights = True
 log_y = True
 doGridSearchCV = False
+plot_validation_curve = False
 
 parser = argparse.ArgumentParser(description='Run classifier -- BDT or neural network')
 group = parser.add_mutually_exclusive_group()
@@ -51,8 +53,10 @@ group.add_argument('-b', '--bdt', action='store_true', help='Run with BDT')
 group.add_argument('-n', '--nn', action='store_true', help='Run with neural network')
 parser.add_argument('-t', '--no_training', action='store_false', help='Do not train the selected classifier')
 parser.add_argument('-w', '--no_event_weights', action='store_false', help='Do not apply event weights to training examples')
-parser.add_argument('-l', '--no_log_y', action='store_false', help='Do not use log scale on y-axis')
+parser.add_argument('-y', '--no_log_y', action='store_false', help='Do not use log scale on y-axis')
 parser.add_argument('-g', '--doGridSearchCV', action='store_true', help='Perform tuning of hyperparameters using k-fold cross-validation')
+parser.add_argument('-v', '--validation_curve', action='store_true', help='Plot validation curve')
+parser.add_argument('-l', '--learning_curve', action='store_true', help='Plot learning curve')
 
 args = parser.parse_args()
 
@@ -74,14 +78,10 @@ if not(args.no_log_y):
     log_y = args.no_log_y
 if args.doGridSearchCV:
     doGridSearchCV = args.doGridSearchCV
-
-if use_event_weights:
-    print "\nINFO Applying event weights to the examples during training"
-else:
-    print "\nINFO Not applying event weights to the examples during training"
-
-if doGridSearchCV:
-    print "INFO Performing grid search for hyperparameters"
+if args.validation_curve:
+    plot_validation_curve = args.validation_curve
+if args.learning_curve:
+    plot_learning_curve = args.learning_curve
 
 #selectedFeatures = features
 unselectedFeatures = ['dsid']
@@ -131,7 +131,6 @@ print "Number of background examples for training =", y_train[y_train==0].shape[
 print "Number of background examples for testing =", y_test[y_test==0].shape[0]  
 print "Number of signal examples for training =", y_train[y_train==1].shape[0]  
 print "Number of signal examples for testing =", y_test[y_test==1].shape[0]  
-print ""
 
 
 # Feature scaling
@@ -139,32 +138,73 @@ min_max_scaler = preprocessing.MinMaxScaler()
 X_train = min_max_scaler.fit_transform(X_train)
 X_test = min_max_scaler.transform(X_test)
 
+if use_event_weights:
+    sample_weight = event_weights
+    print "\nINFO  Applying event weights to the examples during training"
+else:
+    sample_weight = None
+    print "\nINFO  Not applying event weights to the examples during training"
 
-#for score in scores:  
+if doGridSearchCV:
+    print "INFO  Performing grid search for hyperparameters"
+if plot_validation_curve:
+    print "INFO  Plotting validation curve"
+if plot_learning_curve:
+    print "INFO  Plotting learning curve"
+
+train_scores_vc_mean = train_scores_vc_std = 0
+valid_scores_vc_mean = valid_scores_vc_std = 0
+train_scores_lc_mean = train_scores_lc_std = 0
+valid_scores_lc_mean = valid_scores_lc_std = 0
+train_sizes = [0.5, 0.75, 1.0]
+
+
 # BDT TRAINING AND TESTING
-if runBDT:
-    if runTraining:
-        print "Building and training BDT"
 
+n_estimators = [10, 100, 1000]
+learning_rate = [0.1, 1.0, 10.0]
+
+param_range_bdt = n_estimators
+param_name_bdt = "n_estimators"
+
+if runBDT:
+
+    if runTraining:
         if doGridSearchCV:
-            tuned_parameters = [{'base_estimator': [DecisionTreeClassifier(max_depth=1)], 'n_estimators': [10, 100, 1000], 
-                                    'learning_rate': [0.1, 1.0, 10.0]}]
+            tuned_parameters = [{'base_estimator': [DecisionTreeClassifier(max_depth=1)], 'n_estimators': n_estimators, 
+                                    'learning_rate': learning_rate}]
             clf = GridSearchCV( AdaBoostClassifier(), tuned_parameters, cv=3, scoring=None )
         else:
             clf = AdaBoostClassifier( base_estimator=DecisionTreeClassifier(max_depth=1), n_estimators=100, 
                                       learning_rate=1.0, algorithm='SAMME.R', random_state=None )
 
         params = clf.get_params()
-        print "params",params
+        print "\nclf.get_params()",params
 
-        if use_event_weights:
-            clf.fit(X_train,y_train,sample_weight=event_weights)
-        else:
-            clf.fit(X_train,y_train)
+        print "\nBuilding and training BDT"
+
+        clf.fit(X_train,y_train,sample_weight=event_weights)
+
+        if plot_validation_curve:
+            train_scores, valid_scores = validation_curve(clf, X_train, y_train, param_name=param_name_bdt, param_range=param_range_bdt, 
+                                                            cv=3, scoring=None, n_jobs=1, verbose=0)
+            train_scores_vc_mean = np.mean(train_scores, axis=1)
+            train_scores_vc_std = np.std(train_scores, axis=1)
+            valid_scores_vc_mean = np.mean(valid_scores, axis=1)
+            valid_scores_vc_std = np.std(valid_scores, axis=1)
+
+        if plot_learning_curve:
+            train_sizes, train_scores, valid_scores = learning_curve(clf, X_train, y_train, train_sizes=train_sizes, 
+                                                                        cv=3, scoring=None, n_jobs=1, verbose=0)
+            train_scores_lc_mean = np.mean(train_scores, axis=1)
+            train_scores_lc_std = np.std(train_scores, axis=1)
+            valid_scores_lc_mean = np.mean(valid_scores, axis=1)
+            valid_scores_lc_std = np.std(valid_scores, axis=1)
+
         joblib.dump(clf, 'bdt_AC18.pkl')
 
     if not runTraining:
-        print "Reading in pre-trained BDT"
+        print "\nReading in pre-trained BDT"
         clf = joblib.load('bdt_AC18.pkl')
 
     # Training scores
@@ -178,52 +218,75 @@ if runBDT:
 
 # NEURAL NETWORK TRAINING AND TESTING
 # Set up neural network
+
+batch_size = [10, 20, 40, 60, 80, 100]
+epochs = [10, 100, 1000]
+
+param_range_nn = epochs
+param_name_nn = "epochs"
+
 if runNN:
+
+    def create_model():
+        model = Sequential()
+        model.add(Dense(X_train.shape[1], input_dim=X_train.shape[1], activation="relu"))
+        model.add(Dense(1, activation="sigmoid"))
+        model.compile(optimizer="rmsprop", loss="binary_crossentropy", metrics=["accuracy"])
+        return model
+
     if runTraining:
-        print "Building and training neural network"
+        print "\nBuilding and training neural network"
 
         if doGridSearchCV:
-            def create_model():
+            model = KerasClassifier(build_fn=create_model, verbose=0)
+
+            param_grid = dict(batch_size=batch_size, epochs=epochs)
+            grid = GridSearchCV(estimator=model, param_grid=param_grid, n_jobs=-1)
+
+            grid_result = grid.fit(X_train, y_train, epochs=100, batch_size=100, sample_weight=event_weights)
+
+        elif not doGridSearchCV:
+            if plot_validation_curve:
+                model = KerasClassifier(build_fn=create_model, verbose=0)
+            else:
                 model = Sequential()
                 model.add(Dense(X_train.shape[1], input_dim=X_train.shape[1], activation="relu"))
                 model.add(Dense(1, activation="sigmoid"))
                 model.compile(optimizer="rmsprop", loss="binary_crossentropy", metrics=["accuracy"])
-                return model
 
-            model = KerasClassifier(build_fn=create_model, verbose=0)
+            model.fit(X_train, y_train, epochs=100, batch_size=100, sample_weight=event_weights)
 
-            batch_size = [10, 20, 40, 60, 80, 100]
-            epochs = [10, 50, 100]
-            param_grid = dict(batch_size=batch_size, epochs=epochs)
-            grid = GridSearchCV(estimator=model, param_grid=param_grid, n_jobs=-1)
+            if plot_validation_curve or plot_learning_curve:
+                if plot_validation_curve:
+                    train_scores, valid_scores = validation_curve(model, X_train, y_train, param_name=param_name_nn, param_range=param_range_nn, 
+                                                                    cv=3, scoring="accuracy", n_jobs=1, verbose=0)
+                    train_scores_vc_mean = np.mean(train_scores, axis=1)
+                    train_scores_vc_std = np.std(train_scores, axis=1)
+                    valid_scores_vc_mean = np.mean(valid_scores, axis=1)
+                    valid_scores_vc_std = np.std(valid_scores, axis=1)
 
-            if use_event_weights:
-                grid_result = grid.fit(X_train, y_train, epochs=100, batch_size=100, sample_weight=event_weights) #, validation_split=0.33)
+                if plot_learning_curve:
+                    train_sizes, train_scores, valid_scores = learning_curve(model, X_train, y_train, train_sizes=train_sizes, 
+                                                                                cv=3, scoring=None, n_jobs=1, verbose=0)
+                    train_scores_lc_mean = np.mean(train_scores, axis=1)
+                    train_scores_lc_std = np.std(train_scores, axis=1)
+                    valid_scores_lc_mean = np.mean(valid_scores, axis=1)
+                    valid_scores_lc_std = np.std(valid_scores, axis=1)
+
             else:
-                grid_result = grid.fit(X_train,y_train, epochs=100, batch_size=100)
-
-        elif not doGridSearchCV:
-            model = Sequential()
-            model.add(Dense(X_train.shape[1], input_dim=X_train.shape[1], activation="relu"))
-            model.add(Dense(1, activation="sigmoid"))
-            model.compile(optimizer="rmsprop", loss="binary_crossentropy", metrics=["accuracy"])
-
-            if use_event_weights:
-                model.fit(X_train, y_train, epochs=100, batch_size=100, sample_weight=event_weights) #, validation_split=0.33)
-            else:
-                model.fit(X_train,y_train, epochs=100, batch_size=100)
-
-            model.save("nn_AC18.h5")
+                model.save("nn_AC18.h5")
 
     elif not runTraining:
         print "Reading in pre-trained neural network"
         model = load_model("nn_AC18.h5")
 
     # Get class and probability predictions
-    if doGridSearchCV:
+    if doGridSearchCV or plot_validation_curve or plot_learning_curve:
+        if doGridSearchCV:
+            model = grid
         # Training
-        pred_train = grid.predict(X_train)
-        output_train = grid.predict_proba(X_train)
+        pred_train = model.predict(X_train)
+        output_train = model.predict_proba(X_train)
         for i_row_train in range(output_train.shape[0]):
             if y_train[i_row_train] == 0:
                 output_train[i_row_train] = output_train[i_row_train,0]
@@ -232,8 +295,8 @@ if runNN:
         output_train = output_train[:,0]
 
         # Testing
-        pred_test = grid.predict(X_test)
-        output_test = grid.predict_proba(X_test) # array of shape (n,2)
+        pred_test = model.predict(X_test)
+        output_test = model.predict_proba(X_test) # array of shape (n,2)
         for i_row_test in range(output_test.shape[0]):
             if y_test[i_row_test] == 0:
                 output_test[i_row_test] = output_test[i_row_test,0]
@@ -268,6 +331,10 @@ if doGridSearchCV:
     for mean, std, params in zip(means, stds, clf.cv_results_['params']):
         print "{0:0.3f} (+/-{1:0.03f}) for {2!r}".format(mean, std, params)
     print ""
+    df = pd.DataFrame.from_dict(clf.cv_results_)
+    print "pandas DataFrame of cv results"
+    print df
+    print ""
 
     print "Detailed classification report:"
     print ""
@@ -276,36 +343,24 @@ if doGridSearchCV:
     print ""
     y_true, y_pred = y_test, clf.predict(X_test)
     print classification_report(y_true, y_pred)
-    print ""
 
-#if not doGridSearchCV:
-print "Training sample...."
-print "  Signal identified as signal (%)        : ",100.0*np.sum(pred_train[y_train==1]==1.0)/(X_train[y_train==1].shape[0])
-print "  Signal identified as background (%)    : ",100.0*np.sum(pred_train[y_train==1]==0.0)/(X_train[y_train==1].shape[0])
-print "  Background identified as signal (%)    : ",100.0*np.sum(pred_train[y_train==0]==1.0)/(X_train[y_train==0].shape[0])
-print "  Background identified as background (%): ",100.0*np.sum(pred_train[y_train==0]==0.0)/(X_train[y_train==0].shape[0])
-print ""
-print "Testing sample...."
-print "  Signal identified as signal (%)        : ",100.0*np.sum(pred_test[y_test==1]==1.0)/(X_test[y_test==1].shape[0])
-print "  Signal identified as background (%)    : ",100.0*np.sum(pred_test[y_test==1]==0.0)/(X_test[y_test==1].shape[0])
-print "  Background identified as signal (%)    : ",100.0*np.sum(pred_test[y_test==0]==1.0)/(X_test[y_test==0].shape[0])
-print "  Background identified as background (%): ",100.0*np.sum(pred_test[y_test==0]==0.0)/(X_test[y_test==0].shape[0])
-
-# Plotting - probabilities
-#print probabilities_train[(y_train==0.0).reshape(2*nEvents,)]
-
-if runBDT or runNN:
-    if use_event_weights:
-        output_string = 'AC18_shuffled_train_test_split_ew'
-    else:
-        output_string = 'AC18_shuffled_train_test_split'
-    if runBDT: 
-        output_filename = 'plots/bdt_'+output_string+'.pdf'
-    elif runNN: 
-        output_filename = 'plots/nn_'+output_string+'.pdf'
-    pdf_pages = PdfPages(output_filename)
+# Define name of output file
+if runBDT: 
+    output_filename = 'plots/bdt'
+elif runNN: 
+    output_filename = 'plots/nn'
+output_filename += '_AC18_shuffled_train_test_split'
+if use_event_weights:
+    output_filename += '_ew'
+if plot_validation_curve:
+    output_filename += '_vc'
+if plot_learning_curve:
+    output_filename += '_lc'
+output_filename += '.pdf'
+pdf_pages = PdfPages(output_filename)
 np.set_printoptions(threshold=np.nan)
 
+# Plotting - probabilities
 figA, axsA = plt.subplots()
 axsA.set_ylabel("Events")
 if runBDT: 
@@ -315,14 +370,13 @@ elif runNN:
     axsA.set_xlabel("NN signal probability")
     bins = np.linspace(0.0, 1.0, 25)
 # Plot training output
-#if not doGridSearchCV:
-axsA.hist(output_train[y_train==0], bins, alpha=0.3, histtype='stepfilled', facecolor='blue', label='Background trained', normed=True)
-axsA.hist(output_train[y_train==1], bins, alpha=0.3, histtype='stepfilled', facecolor='red', label='Signal trained', normed=True)
+axsA.hist(output_train[y_train==0], bins, alpha=0.2, histtype='stepfilled', facecolor='blue', label='Background trained', normed=True)
+axsA.hist(output_train[y_train==1], bins, alpha=0.2, histtype='stepfilled', facecolor='red', label='Signal trained', normed=True)
 # Plot test output
 axsA.hist(output_test[y_test==0], bins, alpha=1, histtype='step', linestyle='--', edgecolor='blue', label='Background tested', normed=True)
 axsA.hist(output_test[y_test==1], bins, alpha=1, histtype='step', linestyle='--', edgecolor='red', label='Signal tested', normed=True)
 if log_y: axsA.set_yscale('log') #, nonposy='clip')
-axsA.legend()
+axsA.legend(loc="best")
 pdf_pages.savefig(figA)
 
 
@@ -330,7 +384,6 @@ pdf_pages.savefig(figA)
 # ROC
 fpr, tpr, thresholds = roc_curve(y_test, output_test, pos_label=1)
 auc = roc_auc_score(y_test, output_test)
-print "\nArea under ROC = ",auc
 figB, axB1 = plt.subplots()
 #axB1,axB2 = axsB.ravel()
 axB1.plot(fpr, tpr, label='ROC curve')
@@ -346,7 +399,7 @@ pdf_pages.savefig(figB)
 
 # BDT
 # Variable importances
-if runBDT and not doGridSearchCV:
+if runBDT and not (doGridSearchCV or plot_validation_curve):
     y_pos = np.arange(X_train.shape[1])
     figC, axC1 = plt.subplots(1,1)
     axC1.barh(y_pos, 100.0*clf.feature_importances_, align='center', alpha=0.4)
@@ -360,7 +413,7 @@ if runBDT and not doGridSearchCV:
 
 # NEURAL NETWORK
 # Assess variable importance using weights method
-if runNN and not doGridSearchCV:
+if runNN and not (doGridSearchCV or plot_validation_curve):
     weights = np.array([])
     for layer in model.layers:
         if layer.name =="dense_1":
@@ -471,6 +524,60 @@ plot_confusion_matrix(cnf_matrix_test, classes=class_names, normalize=True,
 
 pdf_pages.savefig(figE)
 
+if plot_validation_curve:
+    # Plot validation curves
+    figF, axsF = plt.subplots()
+    # Training score
+    if runBDT:
+        param_range = param_range_bdt
+        param_name = param_name_bdt
+    elif runNN:
+        param_range = param_range_nn
+        param_name = param_name_nn
+    axsF.plot(param_range, train_scores_vc_mean, label="Training score", color="darkorange", lw=2)
+    axsF.fill_between(epochs, train_scores_vc_mean - train_scores_vc_std, train_scores_vc_mean + train_scores_vc_std, alpha=0.2, color="darkorange", lw=2)
+    # Test score
+    axsF.plot(param_range, valid_scores_vc_mean, label="Cross-validation score", color="navy", lw=2)
+    axsF.fill_between(epochs, valid_scores_vc_mean - valid_scores_vc_std, valid_scores_vc_mean + valid_scores_vc_std, alpha=0.2, color="navy", lw=2)
+    axsF.set_xlabel(param_name)
+    axsF.set_ylabel('Score')
+    axsF.legend(loc="best")
+    axsF.set_title('Validation curves')
+    pdf_pages.savefig(figF)
+
+if plot_learning_curve:
+    # Plot learning curves
+    figG, axsG = plt.subplots()
+    # 68% CL bands
+    #if runBDT:
+    #elif runNN:
+    axsG.fill_between(train_sizes, train_scores_lc_mean - train_scores_lc_std, train_scores_lc_mean + train_scores_lc_std, alpha=0.2, color="r", lw=2)
+    axsG.fill_between(train_sizes, valid_scores_lc_mean - valid_scores_lc_std, valid_scores_lc_mean + valid_scores_lc_std, alpha=0.2, color="g", lw=2)
+    # Training and validation scores
+    axsG.plot(train_sizes, train_scores_lc_mean, 'o-', label="Training score", color="r", lw=2)
+    axsG.plot(train_sizes, valid_scores_lc_mean, 'o-', label="Cross-validation score", color="g", lw=2)
+    axsG.set_xlabel("Training examples")
+    axsG.set_ylabel('Score')
+    axsG.legend(loc="best")
+    axsG.set_title('Learning curves')
+    pdf_pages.savefig(figG)
+
+
 pdf_pages.close()
+
+print ""
+print "Training sample...."
+print "  Signal identified as signal (%)        : ",100.0*np.sum(pred_train[y_train==1]==1.0)/(X_train[y_train==1].shape[0])
+print "  Signal identified as background (%)    : ",100.0*np.sum(pred_train[y_train==1]==0.0)/(X_train[y_train==1].shape[0])
+print "  Background identified as signal (%)    : ",100.0*np.sum(pred_train[y_train==0]==1.0)/(X_train[y_train==0].shape[0])
+print "  Background identified as background (%): ",100.0*np.sum(pred_train[y_train==0]==0.0)/(X_train[y_train==0].shape[0])
+print ""
+print "Testing sample...."
+print "  Signal identified as signal (%)        : ",100.0*np.sum(pred_test[y_test==1]==1.0)/(X_test[y_test==1].shape[0])
+print "  Signal identified as background (%)    : ",100.0*np.sum(pred_test[y_test==1]==0.0)/(X_test[y_test==1].shape[0])
+print "  Background identified as signal (%)    : ",100.0*np.sum(pred_test[y_test==0]==1.0)/(X_test[y_test==0].shape[0])
+print "  Background identified as background (%): ",100.0*np.sum(pred_test[y_test==0]==0.0)/(X_test[y_test==0].shape[0])
+
+print "\nArea under ROC = ",auc
 
 print "\nPlots saved to",output_filename
