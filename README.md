@@ -5,13 +5,14 @@ Based on the `dqews` package written by James Catmore – https://gitlab.cern.ch
 * Enter the names of all the input features to the classifier in `featuresLists.py` (with event weights as the last feature)
 
 * For BDTs, run
-
-`python classifiers.py --bdt`
-
+```
+python classifiers.py --bdt
+```
 or for neural networks, run
-
-`python classifiers.py --nn`
-
+```
+python classifiers.py --nn
+```
 To list all available command line options, type
-
-`python classifiers.py -h`
+```
+python classifiers.py -h
+```
