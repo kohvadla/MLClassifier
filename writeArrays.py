@@ -4,7 +4,7 @@ import numpy as np
 from root_numpy import tree2array, root2array
 import ROOT
 from sklearn.preprocessing import Imputer
-from featuresLists import features
+from featureList import features
 
 # User-defined
 fileName = "/mn/felt/u1/kovadla/cern/AnalysisChallenge2018/ewk/flat_ntuples/2L_sig_flat.root"
