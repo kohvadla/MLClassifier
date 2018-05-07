@@ -171,10 +171,10 @@ print "after imp: np.any(X == -999)",np.any(X == -999)
 
 # Split dataset in train and test sets
 test_size=0.33
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=seed, shuffle=True, stratify=None)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=seed, stratify=None) #, shuffle=True
 y_test = y_test.astype(int) # convert labels from float to int
 event_weights_train, event_weights_test, y_ew_train, y_ew_test = train_test_split(event_weights, y, test_size=test_size, 
-                                                                                    random_state=seed, shuffle=True, stratify=None)
+                                                                                    random_state=seed, stratify=None) #, shuffle=True
 y_ew_test = y_ew_test.astype(int) # convert labels from float to int
 
 print ""
