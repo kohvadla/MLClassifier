@@ -401,11 +401,14 @@ elif runNN:
 output_filename += '_AC18_ext_shuffled'
 if use_event_weights:
     output_filename += '_ew'
+if use_class_weights:
+    output_filename += '_cw'
 if plot_validation_curve:
     output_filename += '_vc'
 if plot_learning_curve:
     output_filename += '_lc'
 output_filename += '.pdf'
+print "output_filename",output_filename
 pdf_pages = PdfPages(output_filename)
 np.set_printoptions(threshold=np.nan)
 
@@ -425,11 +428,11 @@ elif runNN:
     axsA.set_title("Neural network")
     axsA.set_xlabel("Signal probability")
 # Plot training output
-axsA.hist(output_train[y_train==0], bins, alpha=0.2, histtype='stepfilled', facecolor='blue', label='Background trained', normed=True)
-axsA.hist(output_train[y_train==1], bins, alpha=0.2, histtype='stepfilled', facecolor='red', label='Signal trained', normed=True)
+axsA.hist(output_train[y_train==0], bins, alpha=0.2, histtype='stepfilled', facecolor='blue', label='Background trained', density=True)
+axsA.hist(output_train[y_train==1], bins, alpha=0.2, histtype='stepfilled', facecolor='red', label='Signal trained', density=True)
 # Plot test output
-axsA.hist(output_test[y_test==0], bins, alpha=1, histtype='step', linestyle='--', edgecolor='blue', label='Background tested', normed=True)
-axsA.hist(output_test[y_test==1], bins, alpha=1, histtype='step', linestyle='--', edgecolor='red', label='Signal tested', normed=True)
+axsA.hist(output_test[y_test==0], bins, alpha=1, histtype='step', linestyle='--', edgecolor='blue', label='Background tested', density=True)
+axsA.hist(output_test[y_test==1], bins, alpha=1, histtype='step', linestyle='--', edgecolor='red', label='Signal tested', density=True)
 if log_y: axsA.set_yscale('log') #, nonposy='clip')
 axsA.legend(loc="best")
 pdf_pages.savefig(figA)
