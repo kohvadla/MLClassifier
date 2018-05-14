@@ -6,6 +6,7 @@ import argparse
 import pickle
 import itertools
 
+import ROOT
 import h5py
 
 import numpy as np
@@ -46,11 +47,16 @@ logging.basicConfig(
 ###############################################
 # MAIN PROGRAM
 
+# Close figure windows, if there are any open
+plt.close()
+
+# Start timer
 t_start = time.time()
 
-sum_weights_tot_bkg = 145592.7984953417
-sum_weights_tot_sig = 159.2633907347918
+#sum_weights_tot_bkg = 145592.7984953417
+#sum_weights_tot_sig = 159.2633907347918
 
+# Default values for command line options
 runBDT = False
 runXGBoost = False
 runNN = False
@@ -63,6 +69,7 @@ plot_validation_curve = False
 plot_learning_curve = False
 do_cut_scan = False
 region = 'inclusive'
+final_state = '2L'
 
 parser = argparse.ArgumentParser(description='Run classifier -- BDT or neural network')
 group = parser.add_mutually_exclusive_group()
@@ -78,6 +85,7 @@ parser.add_argument('-v', '--validation_curve', action='store_true', help='Plot 
 parser.add_argument('-l', '--learning_curve', action='store_true', help='Plot learning curve')
 parser.add_argument('-s', '--cut_scan', action='store_true', help='Do AMS significance scan on classifier output')
 parser.add_argument('-r', '--region', type=str, nargs='?', help='Phase space region: 2L2J or 2L2J-ISR or incl', default='inclusive')
+parser.add_argument('-f', '--final_state', type=str, nargs='?', help='Final state: 2L or 3L', default='2L')
 
 args = parser.parse_args()
 
@@ -115,6 +123,8 @@ if args.region == '2L2J':
     region = args.region
 elif args.region == '2L2J-ISR':
     region = args.region
+if args.final_state == '3L':
+    final_state = '3L'
 
 if region == 'inclusive': 
     region_id = '2L'
@@ -126,7 +136,7 @@ elif region == '2L2J-ISR':
 ntuple_id = 'flat_ext'
 
 # Build background arrays
-bkgFilename = "../../../ewk/hdf5_files/"+region_id+"_bkg_"+ntuple_id+".h5"
+bkgFilename = "../../../ewk/hdf5_files/"+final_state+"_bkg_"+ntuple_id+".h5"
 bkgFile = h5py.File(bkgFilename,"r")
 X_bkg_dset = bkgFile['FlatTree'][:]  # structured array from the FlatTree dataset
 
@@ -151,7 +161,7 @@ X_bkg_ew_arr = np.array( X_bkg_dset['event_weight'].tolist() )
 bkgFile.close()
 
 # Build signal arrays
-sigFilename = "../../../ewk/hdf5_files/"+region_id+"_sig_"+ntuple_id+".h5"
+sigFilename = "../../../ewk/hdf5_files/"+final_state+"_sig_"+ntuple_id+".h5"
 sigFile = h5py.File(sigFilename,"r")
 X_sig_dset = sigFile['FlatTree'][:]
 
@@ -202,7 +212,7 @@ print "\nscale_pos_weight",scale_pos_weight
 
 # Replane -999
 imp = Imputer(missing_values=-999, strategy='mean', axis=0)
-imp.fit_transform(X)
+X = imp.fit_transform(X)
 
 print "\nbefore imp: np.any(X_bkg_sel_arr == -999)",np.any(X_bkg_sel_arr == -999)
 print "before imp: np.any(X_bkg_shuffled == -999)",np.any(X_bkg_sel_shuffled == -999)
@@ -211,11 +221,11 @@ print "after imp: np.any(X == -999)",np.any(X == -999)
 # Split dataset in train and test sets
 test_size=0.33
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=seed, stratify=None) #, shuffle=True
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=seed, stratify=y) #, shuffle=True
 y_test = y_test.astype(int) # convert labels from float to int
 
 event_weights_train, event_weights_test, y_ew_train, y_ew_test = train_test_split(event_weights, y, test_size=test_size, 
-                                                                                    random_state=seed, stratify=None) #, shuffle=True
+                                                                                    random_state=seed, stratify=y) #, shuffle=True
 y_ew_test = y_ew_test.astype(int) # convert labels from float to int
 
 print ""
@@ -256,24 +266,31 @@ train_sizes = [0.5, 0.75, 1.0]
 
 # BDT TRAINING AND TESTING
 
-n_estimators = [10, 100, 1000]
-learning_rate = [0.1, 1.0, 10.0]
+# List of parameter values to grid search
+max_depth = [1, 2, 3, 4, 5]
+n_estimators = [50, 100, 200, 500, 1000]
+learning_rate = [0.001, 0.01, 0.1, 0.5, 1.0]
 
-param_range_bdt = n_estimators
-param_name_bdt = "n_estimators"
+# Specify one of the above parameter lists to plot validation curve for
+param_name_bdt = "max_depth"  # Name of parameter in the API
+param_range_bdt = max_depth   # Name of the variable holding the list of parameters
+#param_name_bdt = "n_estimators"  # Name of parameter in the API
+#param_range_bdt = n_estimators   # Name of the variable holding the list of parameters
+#param_name_bdt = "learning_rate"  # Name of parameter in the API
+#param_range_bdt = learning_rate   # Name of the variable holding the list of parameters
 
-global model
+global model, trained_model_filename
 
 if runBDT:
 
     if runTraining:
 
-        if runXGBoost:
+        if runXGBoost:  # best parameter values: max_depth = 5, learning_rate=0.5, n_estimators=200
             model = XGBClassifier(max_depth=3, learning_rate=0.1, n_estimators=100, objective="binary:logistic", scale_pos_weight=scale_pos_weight)
 
             if doGridSearchCV:
-                tuned_parameters = [{'n_estimators': n_estimators, 'learning_rate': learning_rate}]
-                model = GridSearchCV( model, tuned_parameters, cv=3, scoring=None )
+                tuned_parameters = [{'max_depth': max_depth, 'n_estimators': n_estimators, 'learning_rate': learning_rate}]
+                model = GridSearchCV( model, tuned_parameters, cv=3, scoring=None, fit_params={'sample_weight': sample_weight} )
 
         else: # run AdaBoost
             model = AdaBoostClassifier(DecisionTreeClassifier(max_depth=1, class_weight=class_weight_dict), n_estimators=100, learning_rate=1.0)
@@ -281,14 +298,18 @@ if runBDT:
             if doGridSearchCV:
                 tuned_parameters = [{'base_estimator': [DecisionTreeClassifier(max_depth=1, class_weight=class_weight_dict)], 
                                     'n_estimators': n_estimators, 'learning_rate': learning_rate}]
-                model = GridSearchCV( model, tuned_parameters, cv=3, scoring=None )
+                model = GridSearchCV( model, tuned_parameters, cv=3, scoring=None, fit_params={'sample_weight': sample_weight} )
 
         params = model.get_params()
         print "\nmodel.get_params()",params
 
+        if doGridSearchCV:
+            model.fit( X_train, y_train )
+        else:
+            model.fit( X_train, y_train, sample_weight=sample_weight )
+            
         print "\nBuilding and training BDT\n"
 
-        model.fit( X_train, y_train, sample_weight=sample_weight )
 
         if plot_validation_curve:
             train_scores, valid_scores = validation_curve(model, X_train, y_train, param_name=param_name_bdt, param_range=param_range_bdt, 
@@ -306,11 +327,19 @@ if runBDT:
             valid_scores_lc_mean = np.mean(valid_scores, axis=1)
             valid_scores_lc_std = np.std(valid_scores, axis=1)
 
-        joblib.dump(model, 'bdt_AC18.pkl')
+        if runXGBoost: 
+            trained_model_filename = 'xgboost_'+final_state+'_AC18.pkl'
+        else: 
+            trained_model_filename = 'adaboost_'+final_state+'_AC18.pkl'
+        joblib.dump(model, trained_model_filename)
 
     if not runTraining:
-        print "\nReading in pre-trained BDT\n"
-        model = joblib.load('bdt_AC18.pkl')
+        if runXGBoost:
+            model = joblib.load('xgboost_'+final_state+'_AC18.pkl')
+            print "\nReading in pre-trained BDT:",'xgboost_'+final_state+'_AC18.pkl\n'
+        else:
+            model = joblib.load('adaboost_'+final_state+'_AC18.pkl')
+            print "\nReading in pre-trained BDT:",'adaboost_'+final_state+'_AC18.pkl\n'
 
     # Training scores
     pred_train = model.predict(X_train)
@@ -437,12 +466,12 @@ if doGridSearchCV:
 
 # Define name of output file
 if runXGBoost: 
-    output_filename = 'plots/xgboost'
+    output_filename = 'xgboost'
 elif runBDT: 
-    output_filename = 'plots/adaboost'
+    output_filename = 'adaboost'
 elif runNN: 
-    output_filename = 'plots/nn'
-output_filename += '_'+region_id+'_'+ntuple_id
+    output_filename = 'nn'
+output_filename += '_'+final_state+'_'+ntuple_id
 if use_event_weights:
     output_filename += '_ew'
 if use_class_weights:
@@ -451,8 +480,9 @@ if plot_validation_curve:
     output_filename += '_vc'
 if plot_learning_curve:
     output_filename += '_lc'
-output_filename += '.pdf'
-pdf_pages = PdfPages(output_filename)
+
+plot_filename = 'plots/'+output_filename+'.pdf'
+pdf_pages = PdfPages(plot_filename)
 np.set_printoptions(threshold=np.nan)
 
 
@@ -472,20 +502,40 @@ def ams(s, b, br=10.):
 
 # Yields
 
-clf_cut = 0. 
-cut_optimized = 0.
-ams_optimized = 0.
+clf_cut = 0.
+if not do_cut_scan:
+    if final_state == '2L':
+        if runXGBoost: clf_cut = 0.9   # optimized cut on xgboost output
+        elif runBDT: clf_cut = 0.0  # optimized cut on adaboost output
+    elif final_state == '3L':
+        if runXGBoost: clf_cut = 0.9   # optimized cut on xgboost output
+        elif runBDT: clf_cut = 0.0  # optimized cut on adaboost output
+cut_optimized = clf_cut
+ams_optimized_br0 = 0.
+ams_optimized_br10 = 0.
 S_optimized = 0.
 B_optimized = 0.
 acceptance_bkg = 1.
 acceptance_sig = 1.
 
+print "X_bkg_dset.shape[0]",X_bkg_dset.shape[0]
+print "X_bkg_sel_shuffled.shape[0]",X_bkg_sel_shuffled.shape[0]
+
+n_train_test_bkg = X_bkg_sel_shuffled.shape[0]
+n_tot_bkg = X_bkg_dset.shape[0]
+n_sel_bkg_frac = n_train_test_bkg / n_tot_bkg
+
+acceptance_sig = 1./3  # fraction of selected dataset used for testing
+acceptance_bkg = 1./3  # fraction of selected dataset used for testing
+if not use_class_weights:
+    acceptance_bkg *= n_sel_bkg_frac  # fraction of full dataset selected for training and testing
+
 if do_cut_scan:
 
     if runBDT and not runXGBoost:
-        cut_range = [0.0, 0.05, 0.1, 0.15]
+        cut_range = [0.0, 0.05, 0.1, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45]
     else:
-        cut_range = [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95]
+        cut_range = [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99]
 
     for cut in cut_range:
         sum_weights_test_sig = np.sum( event_weights_test[ np.multiply(output_test>cut, y_test==1) == 1 ] )
@@ -501,25 +551,15 @@ if do_cut_scan:
         print "sum_weights_test_sig",sum_weights_test_sig
         print "sum_weights_test_bkg",sum_weights_test_bkg
 
-        print "X_bkg_dset.shape[0]",X_bkg_dset.shape[0]
-        print "X_bkg_sel_shuffled.shape[0]",X_bkg_sel_shuffled.shape[0]
-
-        n_train_test_bkg = X_bkg_sel_shuffled.shape[0]
-        n_tot_bkg = X_bkg_dset.shape[0]
-        n_sel_bkg_frac = n_train_test_bkg / n_tot_bkg
-
-        acceptance_sig = 1./3 #sum_weights_test_sig / sum_weights_tot_sig
-        acceptance_bkg = (1./3)*n_sel_bkg_frac #sum_weights_test_bkg / sum_weights_tot_bkg
-
         print "acceptance_sig",acceptance_sig
         print "acceptance_bkg",acceptance_bkg
 
         S = sum_weights_test_sig/acceptance_sig
         B = sum_weights_test_bkg/acceptance_bkg
 
-	if cut == cut_range[0]:
-	    S_optimized = S
-	    B_optimized = B
+        if cut == cut_range[0]:
+            S_optimized = S
+            B_optimized = B
 
         print "S =",S,", B =",B
         print "sum_weights_test_sig/acceptance_sig =",sum_weights_test_sig/acceptance_sig
@@ -529,20 +569,17 @@ if do_cut_scan:
 
         print "cut =",cut,", ams_br10 = ",ams_scan_br10
 
-        if ams_scan_br10 > ams_optimized and B >= 1.:
+        if ams_scan_br10 > ams_optimized_br10 and B >= 1.: #sum_weights_test_bkg >= 1.:
             ams_optimized_br0 = ams_scan_br0
             ams_optimized_br10 = ams_scan_br10
             cut_optimized = cut
-	    S_optimized = S
-	    B_optimized = B
+            S_optimized = S
+            B_optimized = B
             print "new optimal cut:",cut,", with ams_br10:",ams_scan_br10,", S =",S,", B =",B
 else:
-    sum_weights_test_sig = np.sum( event_weights_test[ np.multiply(output_test>clf_cut, y_test==1) == 1 ] )
-    sum_weights_test_bkg = np.sum( event_weights_test[ np.multiply(output_test>clf_cut, y_test==0) == 1 ] )
+    sum_weights_test_sig = np.sum( event_weights_test[ np.multiply(output_test>cut_optimized, y_test==1) == 1 ] )
+    sum_weights_test_bkg = np.sum( event_weights_test[ np.multiply(output_test>cut_optimized, y_test==0) == 1 ] )
     
-    acceptance_sig = sum_weights_test_sig / sum_weights_tot_sig
-    acceptance_bkg = sum_weights_test_bkg / sum_weights_tot_bkg
-
     S_optimized = sum_weights_test_sig / acceptance_sig
     B_optimized = sum_weights_test_bkg / acceptance_bkg
 
@@ -572,7 +609,7 @@ axsA.hist(output_train[y_train==1], bins, alpha=0.2, histtype='stepfilled', face
 # Plot test output
 axsA.hist(output_test[y_test==0], bins, alpha=1, histtype='step', linestyle='--', edgecolor='blue', label='Background tested', normed=True)
 axsA.hist(output_test[y_test==1], bins, alpha=1, histtype='step', linestyle='--', edgecolor='red', label='Signal tested', normed=True)
-if log_y: axsA.set_yscale('log') #, nonposy='clip')
+if log_y: axsA.set_yscale('log', nonposy='clip')
 axsA.legend(loc="best")
 pdf_pages.savefig(figA)
 
@@ -599,7 +636,7 @@ axsA2.hist(output_train[y_train==1], bins, weights=event_weights_train[y_train==
 # Plot test output
 axsA2.hist(output_test[y_test==0], bins, weights=event_weights_test[y_test==0]*sf_bkg, alpha=1, histtype='step', linestyle='--', edgecolor='blue', label='Background tested', normed=True)
 axsA2.hist(output_test[y_test==1], bins, weights=event_weights_test[y_test==1]*sf_sig, alpha=1, histtype='step', linestyle='--', edgecolor='red', label='Signal tested', normed=True)
-if log_y: axsA2.set_yscale('log') #, nonposy='clip')
+if log_y: axsA2.set_yscale('log', nonposy='clip')
 axsA2.legend(loc="best")
 pdf_pages.savefig(figA2)
 
@@ -626,7 +663,7 @@ axsA3.hist(output_train[y_train==1], bins, weights=event_weights_train[y_train==
 # Plot test output
 axsA3.hist(output_test[y_test==0], bins, weights=sf_bkg*(event_weights_test[y_test==0]), alpha=1, histtype='step', linestyle='--', edgecolor='blue', label='Background tested')
 axsA3.hist(output_test[y_test==1], bins, weights=sf_sig*(event_weights_test[y_test==1]), alpha=1, histtype='step', linestyle='--', edgecolor='red', label='Signal tested')
-if log_y: axsA3.set_yscale('log') #, nonposy='clip')
+if log_y: axsA3.set_yscale('log', nonposy='clip')
 axsA3.legend(loc="best")
 pdf_pages.savefig(figA3)
 
@@ -835,15 +872,16 @@ if plot_validation_curve:
     elif runNN:
         param_range = param_range_nn
         param_name = param_name_nn
-    axsF.plot(param_range, train_scores_vc_mean, 'o-', label="Training score", color="darkorange", lw=2)
-    axsF.fill_between(epochs, train_scores_vc_mean - train_scores_vc_std, train_scores_vc_mean + train_scores_vc_std, alpha=0.2, color="darkorange", lw=2)
+    axsF.plot( param_range, train_scores_vc_mean, 'o-', label="Training score", color="darkorange", lw=2)
+    axsF.fill_between( param_range, train_scores_vc_mean - train_scores_vc_std, train_scores_vc_mean + train_scores_vc_std, alpha=0.2, color="darkorange", lw=2)
     # Test score
-    axsF.plot(param_range, valid_scores_vc_mean, 'o-', label="Cross-validation score", color="navy", lw=2)
-    axsF.fill_between(epochs, valid_scores_vc_mean - valid_scores_vc_std, valid_scores_vc_mean + valid_scores_vc_std, alpha=0.2, color="navy", lw=2)
+    axsF.plot( param_range, valid_scores_vc_mean, 'o-', label="Cross-validation score", color="navy", lw=2)
+    axsF.fill_between( param_range, valid_scores_vc_mean - valid_scores_vc_std, valid_scores_vc_mean + valid_scores_vc_std, alpha=0.2, color="navy", lw=2)
     axsF.set_xlabel(param_name)
     axsF.set_ylabel('Score')
     axsF.legend(loc="best")
     axsF.set_title('Validation curves')
+    axsF.set_ylim(0., 1.)
     pdf_pages.savefig(figF)
 
 if plot_learning_curve:
@@ -852,11 +890,11 @@ if plot_learning_curve:
     # 68% CL bands
     #if runBDT:
     #elif runNN:
-    axsG.fill_between(train_sizes, train_scores_lc_mean - train_scores_lc_std, train_scores_lc_mean + train_scores_lc_std, alpha=0.2, color="r", lw=2)
-    axsG.fill_between(train_sizes, valid_scores_lc_mean - valid_scores_lc_std, valid_scores_lc_mean + valid_scores_lc_std, alpha=0.2, color="g", lw=2)
+    axsG.fill_between( train_sizes, train_scores_lc_mean - train_scores_lc_std, train_scores_lc_mean + train_scores_lc_std, alpha=0.2, color="r", lw=2)
+    axsG.fill_between( train_sizes, valid_scores_lc_mean - valid_scores_lc_std, valid_scores_lc_mean + valid_scores_lc_std, alpha=0.2, color="g", lw=2)
     # Training and validation scores
-    axsG.plot(train_sizes, train_scores_lc_mean, 'o-', label="Training score", color="r", lw=2)
-    axsG.plot(train_sizes, valid_scores_lc_mean, 'o-', label="Cross-validation score", color="g", lw=2)
+    axsG.plot( train_sizes, train_scores_lc_mean, 'o-', label="Training score", color="r", lw=2)
+    axsG.plot( train_sizes, valid_scores_lc_mean, 'o-', label="Cross-validation score", color="g", lw=2)
     axsG.set_xlabel("Training examples")
     axsG.set_ylabel('Score')
     axsG.legend(loc="best")
@@ -865,6 +903,8 @@ if plot_learning_curve:
 
 
 pdf_pages.close()
+
+plt.show()
 
 print ""
 print "Training sample...."
@@ -887,25 +927,72 @@ print "sum_weights_test_bkg",sum_weights_test_bkg
 print "\nacceptance_sig",acceptance_sig
 print "acceptance_bkg",acceptance_bkg
 
-print "\nclf_cut",clf_cut
-
 N = S_optimized + B_optimized
-print "\nS",S_optimized
-print "B",B_optimized
-#print "np.sqrt(B+10)",np.sqrt(B+10)
-print "N",N
-print "np.sqrt(N)",np.sqrt(N)
+#print "\nS",S_optimized
+#print "B",B_optimized
+##print "np.sqrt(B+10)",np.sqrt(B+10)
+#print "N",N
+#print "np.sqrt(N)",np.sqrt(N)
+
+B_optimized_sumw2 = np.sum( (event_weights_test[y_test==0])**2 )#/acceptance_bkg)**2 )
+S_optimized_sumw2 = np.sum( (event_weights_test[y_test==1])**2 )#/acceptance_sig)**2 )
+
+B_optimized_sumwOverAccept2 = np.sum( (event_weights_test[y_test==0]/acceptance_bkg)**2 )
+S_optimized_sumwOverAccept2 = np.sum( (event_weights_test[y_test==1]/acceptance_sig)**2 )
+
+#print "\nevent_weights_test[event_weights_test>1.]",event_weights_test[event_weights_test>1.]
+#print "event_weights_test[y_test==1]",event_weights_test[y_test==1]
+
+# Save SR yields in one-bin histogram
+ROOT_filename = "output_"+output_filename+".root"
+f = ROOT.TFile(ROOT_filename,"recreate")
+ROOT.TH1.SetDefaultSumw2()
+h = ROOT.TH1D("SR","SR yields;;Events",2,0,4)
+
+# Background yield +/- sum of event weights squared
+h.SetBinContent(1, B_optimized)
+h.SetBinError(1, ROOT.TMath.Sqrt(B_optimized_sumw2))
+h.GetXaxis().SetBinLabel(1, "Background +/- sqrt(sumw2)")
+
+# Signal yield +/- sum of event weights squared
+h.SetBinContent(2, S_optimized)
+h.SetBinError(2, ROOT.TMath.Sqrt(S_optimized_sumw2))
+h.GetXaxis().SetBinLabel(2, "Signal +/- sqrt(sumw2)")
+
+# Background yield +/- sum of event weights over acceptance squared
+h.SetBinContent(3, B_optimized)
+h.SetBinError(3, ROOT.TMath.Sqrt(B_optimized_sumwOverAccept2))
+h.GetXaxis().SetBinLabel(3, "Background +/- sqrt(sumOverAccept2)")
+
+# Signal yield +/- sum of event weights over acceptance squared
+h.SetBinContent(4, S_optimized)
+h.SetBinError(4, ROOT.TMath.Sqrt(S_optimized_sumwOverAccept2))
+h.GetXaxis().SetBinLabel(4, "Signal +/- sqrt(sumOverAccept2)")
+
+#c = ROOT.TCanvas("c_SR","SR canvas",800,600)
+h.Draw()
+#c.Draw()
+f.Write()
+f.Close()
+#c.Close()
 
 #print "\nSignificance in SR: S/sqrt(B+10) =",float(S)/np.sqrt(B+10)
 
-print "\n*****************************"
+print "\n*************************************************"
+print "Optimized cut value = ",cut_optimized
+print "*************************************************"
+print "Event yields in optimized SR:"
+print "S =",S_optimized,"+/-",S_optimized_sumw2
+print "B =",B_optimized,"+/-",B_optimized_sumw2
+print "*************************************************"
 print "Optimized AMS score (br=0) = ",ams_optimized_br0
 print "Optimized AMS score (br=10) = ",ams_optimized_br10
-print "Optimized cut value = ",cut_optimized
 print "S/sqrt(N) =",float(S_optimized)/np.sqrt(N)
-print "*****************************"
+print "*************************************************"
 
-print "\nPlots saved to",output_filename
+if runTraining: print "\nTrained classifier model saved to:",trained_model_filename
+print "\nPlots saved to:",plot_filename
+print "\nROOT histogram saved to:",ROOT_filename
 
 t_end = time.time()
 print "\nProcess time:",t_end - t_start
