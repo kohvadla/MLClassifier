@@ -31,6 +31,7 @@ from xgboost import XGBClassifier
 
 import matplotlib.mlab as mlab
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 from matplotlib.colors import to_rgba 
 from matplotlib.backends.backend_pdf import PdfPages
 from mpl_toolkits.axes_grid1 import make_axes_locatable, axes_size
@@ -136,7 +137,7 @@ elif region == '2L2J-ISR':
 ntuple_id = 'flat_ext'
 
 # Build background arrays
-bkgFilename = "../../../ewk/hdf5_files/"+final_state+"_bkg_"+ntuple_id+".h5"
+bkgFilename = "../ewk_samples/hdf5_files/"+final_state+"_bkg_"+ntuple_id+".h5"
 bkgFile = h5py.File(bkgFilename,"r")
 X_bkg_dset = bkgFile['FlatTree'][:]  # structured array from the FlatTree dataset
 
@@ -157,16 +158,18 @@ print "\nn_selected_features =", n_selected_features
 
 X_bkg_sel_arr = np.array( X_bkg_dset[selected_features].tolist() )
 X_bkg_ew_arr = np.array( X_bkg_dset['event_weight'].tolist() )
+X_bkg_dsid_arr = np.array( X_bkg_dset['dsid'].tolist() )
 
 bkgFile.close()
 
 # Build signal arrays
-sigFilename = "../../../ewk/hdf5_files/"+final_state+"_sig_"+ntuple_id+".h5"
+sigFilename = "../ewk_samples/hdf5_files/"+final_state+"_sig_"+ntuple_id+".h5"
 sigFile = h5py.File(sigFilename,"r")
 X_sig_dset = sigFile['FlatTree'][:]
 
 X_sig_sel_arr = np.array( X_sig_dset[selected_features].tolist() )
 X_sig_ew_arr = np.array( X_sig_dset['event_weight'].tolist() )
+X_sig_dsid_arr = np.array( X_sig_dset['dsid'].tolist() )
 
 sigFile.close()
 
@@ -184,12 +187,15 @@ seed = 42
 
 X_sig_sel_shuffled = shuffle(X_sig_sel_arr, random_state=seed, n_samples=None)
 X_sig_ew_shuffled = shuffle(X_sig_ew_arr, random_state=seed, n_samples=None)
+X_sig_dsid_shuffled = shuffle(X_sig_dsid_arr, random_state=seed, n_samples=None)
 
 X_bkg_sel_shuffled = shuffle(X_bkg_sel_arr, random_state=seed, n_samples=n_samples_bkg)
 X_bkg_ew_shuffled = shuffle(X_bkg_ew_arr, random_state=seed, n_samples=n_samples_bkg)
+X_bkg_dsid_shuffled = shuffle(X_bkg_dsid_arr, random_state=seed, n_samples=n_samples_bkg)
 
 X = np.concatenate((X_bkg_sel_shuffled, X_sig_sel_shuffled), 0)
 event_weights = np.concatenate((X_bkg_ew_shuffled, X_sig_ew_shuffled), 0)
+dsid = np.concatenate((X_bkg_dsid_shuffled, X_sig_dsid_shuffled), 0)
 
 # Make array of labels
 y_bkg = np.zeros(X_bkg_sel_shuffled.shape[0])
@@ -227,6 +233,9 @@ y_test = y_test.astype(int) # convert labels from float to int
 event_weights_train, event_weights_test, y_ew_train, y_ew_test = train_test_split(event_weights, y, test_size=test_size, 
                                                                                     random_state=seed, stratify=y) #, shuffle=True
 y_ew_test = y_ew_test.astype(int) # convert labels from float to int
+
+dsid_train, dsid_test, y_dsid_train, y_dsid_test = train_test_split(dsid, y, test_size=test_size, 
+                                                                                    random_state=seed, stratify=y) #, shuffle=True
 
 print ""
 print "# training examples:"
@@ -363,6 +372,8 @@ param_name_nn = "epochs"
 
 if runNN:
 
+    trained_model_filename = 'nn_'+final_state+'_AC18.nn'
+
     def create_model():
         model = Sequential()
         model.add(Dense(X_train.shape[1], input_dim=X_train.shape[1], activation="relu"))
@@ -410,11 +421,11 @@ if runNN:
                     valid_scores_lc_std = np.std(valid_scores, axis=1)
 
             else:
-                model.save("nn_AC18.h5")
+                model.save(trained_model_filename)
 
     elif not runTraining:
         print "\nReading in pre-trained neural network\n"
-        model = load_model("nn_AC18.h5")
+        model = load_model(trained_model_filename)
 
     # Get class and probability predictions
     if doGridSearchCV or plot_validation_curve or plot_learning_curve:
@@ -507,10 +518,15 @@ if not do_cut_scan:
     if final_state == '2L':
         if runXGBoost: clf_cut = 0.9   # optimized cut on xgboost output
         elif runBDT: clf_cut = 0.0  # optimized cut on adaboost output
+        elif runNN: clf_cut = 0.5  # optimized cut on NN output
     elif final_state == '3L':
         if runXGBoost: clf_cut = 0.9   # optimized cut on xgboost output
         elif runBDT: clf_cut = 0.0  # optimized cut on adaboost output
-cut_optimized = clf_cut
+        elif runNN: clf_cut = 0.5  # optimized cut on NN output
+if runNN:
+    cut_optimized = 0.5
+else:
+    cut_optimized = clf_cut
 ams_optimized_br0 = 0.
 ams_optimized_br10 = 0.
 S_optimized = 0.
@@ -587,6 +603,62 @@ else:
     ams_optimized_br10 = ams(S_optimized, B_optimized, 10)
 
 
+# Sorting events into bkg groups according to dsid
+diboson_list = [363356, 363358, 363492]
+Zjets_list = [364100, 364101, 364102, 364103, 364104, 364105, 364106, 364107, 364108, 364109, 364110, 364111, 364112, 364113, 364114, 364115, 364116, 364117, 364118, 364119, 364120, 364121, 364122, 364123, 364124, 364125, 364126, 364127, 364128, 364129, 364130, 364131, 364132, 364133, 364134, 364135, 364136, 364137, 364138, 364139, 364140, 364141]
+ttbar_list = [410009]
+
+group_mask_train_dict = {'diboson': [], 'Zjets': [], 'ttbar': []}
+group_mask_test_dict = {'diboson': [], 'Zjets': [], 'ttbar': []}
+
+for i_event in range(dsid_train.shape[0]):
+
+    #print "dsid_train[i_event]",dsid_train[i_event]
+    if dsid_train[i_event] in diboson_list:
+	group_mask_train_dict['diboson'].append(1)
+    else:
+	group_mask_train_dict['diboson'].append(0)
+
+    if dsid_train[i_event] in Zjets_list:
+	group_mask_train_dict['Zjets'].append(1)
+    else:
+	group_mask_train_dict['Zjets'].append(0)
+
+    if dsid_train[i_event] in ttbar_list:
+	group_mask_train_dict['ttbar'].append(1)
+    else:
+	group_mask_train_dict['ttbar'].append(0)
+       
+for i_event in range(dsid_test.shape[0]):
+
+    if dsid_test[i_event] in diboson_list:
+	group_mask_test_dict['diboson'].append(1)
+    else:
+	group_mask_test_dict['diboson'].append(0)
+
+    if dsid_test[i_event] in Zjets_list:
+	group_mask_test_dict['Zjets'].append(1)
+    else:
+	group_mask_test_dict['Zjets'].append(0)
+
+    if dsid_test[i_event] in ttbar_list:
+	group_mask_test_dict['ttbar'].append(1)
+    else:
+	group_mask_test_dict['ttbar'].append(0)
+       
+group_mask_train_dict['diboson'] = np.array( group_mask_train_dict['diboson'] )
+group_mask_train_dict['Zjets'] = np.array( group_mask_train_dict['Zjets'] )
+group_mask_train_dict['ttbar'] = np.array( group_mask_train_dict['ttbar'] )
+
+group_mask_test_dict['diboson'] = np.array( group_mask_test_dict['diboson'] )
+group_mask_test_dict['Zjets'] = np.array( group_mask_test_dict['Zjets'] )
+group_mask_test_dict['ttbar'] = np.array( group_mask_test_dict['ttbar'] )
+
+print "\ndsid_test.shape[0]",dsid_test.shape[0]
+print "len(group_mask_test_dict['diboson'])",len(group_mask_test_dict['diboson'])
+print "len(group_mask_test_dict['Zjets'])",len(group_mask_test_dict['Zjets'])
+print "len(group_mask_test_dict['ttbar'])",len(group_mask_test_dict['ttbar'])
+
 
 # Plotting - probabilities
 figA, axsA = plt.subplots()
@@ -658,59 +730,123 @@ elif runNN:
 # Plot training output
 sf_bkg = 1./acceptance_bkg
 sf_sig = 1./acceptance_sig
-axsA3.hist(output_train[y_train==0], bins, weights=event_weights_train[y_train==0]*sf_bkg, alpha=0.2, histtype='stepfilled', facecolor='blue', label='Background trained')
-axsA3.hist(output_train[y_train==1], bins, weights=event_weights_train[y_train==1]*sf_sig, alpha=0.2, histtype='stepfilled', facecolor='red', label='Signal trained')
+axsA3.hist(output_train[y_train==0], bins, weights=event_weights_train[y_train==0]*0.5*sf_bkg, alpha=0.2, histtype='stepfilled', facecolor='blue', label='Background trained')
+axsA3.hist(output_train[y_train==1], bins, weights=event_weights_train[y_train==1]*0.5*sf_sig, alpha=0.2, histtype='stepfilled', facecolor='red', label='Signal trained')
 # Plot test output
 axsA3.hist(output_test[y_test==0], bins, weights=sf_bkg*(event_weights_test[y_test==0]), alpha=1, histtype='step', linestyle='--', edgecolor='blue', label='Background tested')
 axsA3.hist(output_test[y_test==1], bins, weights=sf_sig*(event_weights_test[y_test==1]), alpha=1, histtype='step', linestyle='--', edgecolor='red', label='Signal tested')
 if log_y: axsA3.set_yscale('log', nonposy='clip')
-axsA3.legend(loc="best")
+axsA3.set_ylim([0,1E5])
+axsA3.tick_params(axis='x', pad=0.01)
+axsA3.legend(loc="upper right")
 pdf_pages.savefig(figA3)
 
-## Plotting probabilities with event weights
-#figA4, axsA4 = plt.subplots()
-#axsA4.set_ylabel("Events scaled to 36.1/fb")
-#if runXGBoost: 
-#    bins = np.linspace(0.0, 1.0, 30)
-#    axsA4.set_title("XGBoost BDT")
-#    axsA4.set_xlabel("Signal probability")
-#elif runBDT: 
-#    bins = np.linspace(-1.0, 1.0, 40)
-#    axsA4.set_title("AdaBoost BDT")
-#    axsA4.set_xlabel("BDT score")
-#elif runNN: 
-#    bins = np.linspace(0.0, 1.0, 30)
-#    axsA4.set_title("Neural network")
-#    axsA4.set_xlabel("Signal probability")
-## Plot training output
-#sf_bkg = 1./acceptance_bkg
-#sf_sig = 1./acceptance_sig
-#print "output_train[y_train==0].shape",output_train[y_train==0].shape
-#print "event_weights_train[y_train==0].shape",event_weights_train[y_train==0].shape
-#
-#axsA4.hist( [output_train[y_train==0], output_train[y_train==1] ], 
-#		bins, 
-#		weights=[ sf_bkg*event_weights_train[y_train==0], sf_bkg*event_weights_train[y_train==1] ], 
-#		alpha=0.2, 
-#		histtype='bar', 
-#		stacked=False, 
-#		color=[to_rgba('blue'), to_rgba('red')], 
-#		label=['Background trained', 'Signal trained'])
-#
-## Plot test output
-#axsA4.hist( [output_test[y_test==0], output_test[y_test==1]], 
-#		bins, 
-#		weights=[ sf_bkg*event_weights_test[y_test==0], sf_bkg*event_weights_test[y_test==1] ], 
-#		alpha=1, 
-#		histtype='step', 
-#		stacked=False, 
-#		linestyle='--',
-#		color=[to_rgba('blue'), to_rgba('red')], 
-#		label=['Background tested', 'Signal tested'])
-#
-#if log_y: axsA4.set_yscale('log') #, nonposy='clip')
-#axsA4.legend(loc="best")
-#pdf_pages.savefig(figA4)
+# Plotting probabilities with event weights
+figA4, axsA4 = plt.subplots()
+axsA4.set_ylabel("Events scaled to 36.1/fb")
+if runXGBoost: 
+    bins = np.linspace(0.0, 1.0, 30)
+    axsA4.set_title("XGBoost BDT")
+    axsA4.set_xlabel("Signal probability")
+elif runBDT: 
+    bins = np.linspace(-1.0, 1.0, 40)
+    axsA4.set_title("AdaBoost BDT")
+    axsA4.set_xlabel("BDT score")
+elif runNN: 
+    bins = np.linspace(0.0, 1.0, 30)
+    axsA4.set_title("Neural network")
+    axsA4.set_xlabel("Signal probability")
+# Plot training output
+sf_bkg = 1./acceptance_bkg
+sf_sig = 1./acceptance_sig
+print "output_train[y_train==0].shape",output_train[y_train==0].shape
+print "event_weights_train[y_train==0].shape",event_weights_train[y_train==0].shape
+
+if final_state == '2L':
+    group_name_list = ['diboson', 'Zjets', 'ttbar'] #, 'signal']
+
+    output_train_group_list = [output_train[ np.multiply( group_mask_train_dict['diboson'], y_train==0 ) == 1. ],
+                                   output_train[ np.multiply( group_mask_train_dict['Zjets'], y_train==0 ) == 1. ],
+                                   output_train[ np.multiply( group_mask_train_dict['ttbar'], y_train==0 ) == 1. ] ]
+                                   # signal
+                                   #output_train[y_train==1] ]
+    output_test_group_list = [output_test[ np.multiply( group_mask_test_dict['diboson'], y_test==0 ) == 1. ],
+                                   output_test[ np.multiply( group_mask_test_dict['Zjets'], y_test==0 ) == 1. ],
+                                   output_test[ np.multiply( group_mask_test_dict['ttbar'], y_test==0 ) == 1. ] ]
+                                   # signal
+                                   #output_test[y_test==1] ]
+    
+    event_weights_train_group_list = [event_weights_train[ np.multiply( group_mask_train_dict['diboson'], y_train==0 ) == 1. ],
+                                   event_weights_train[ np.multiply( group_mask_train_dict['Zjets'], y_train==0 ) == 1. ],
+                                   event_weights_train[ np.multiply( group_mask_train_dict['ttbar'], y_train==0 ) == 1. ] ]
+                                   # signal
+                                   #event_weights_train[y_train==1] ]
+    event_weights_test_group_list = [event_weights_test[ np.multiply( group_mask_test_dict['diboson'], y_test==0 ) == 1. ],
+                                   event_weights_test[ np.multiply( group_mask_test_dict['Zjets'], y_test==0 ) == 1. ],
+                                   event_weights_test[ np.multiply( group_mask_test_dict['ttbar'], y_test==0 ) == 1. ] ]
+                                   # signal
+                                   #event_weights_test[y_test==1] ]
+    
+    #print "group_mask_train_dict['diboson']",group_mask_train_dict['diboson']
+    #print "output_train[ np.multiply( group_mask_train_dict['diboson'], y_train==0 ) ]",output_train[ np.multiply( group_mask_train_dict['diboson'], y_train==0 ) ]
+    print "group_mask_train_dict['diboson'].shape",group_mask_train_dict['diboson'].shape
+    print "group_mask_train_dict['Zjets'].shape",group_mask_train_dict['Zjets'].shape
+    print "group_mask_train_dict['ttbar'].shape",group_mask_train_dict['ttbar'].shape
+    #for i in range(y_train.shape[0]):
+    #    print "dsid_train[i]",dsid_train[i],"group_mask_train_dict['diboson'][i]",group_mask_train_dict['diboson'][i],"group_mask_train_dict['Zjets'][i]",group_mask_train_dict['Zjets'][i],"group_mask_train_dict['ttbar'][i]",group_mask_train_dict['ttbar'][i]
+        #print "output_train",output_train
+        #print "group_mask_train_dict['diboson'][i]",group_mask_train_dict['diboson'][i], "(y_train==0)[i]",(y_train==0)[i], "output_train[i]",output_train[i],"output_train[ np.multiply( group_mask_train_dict['diboson'], y_train==0 ) ][i]",output_train[ np.multiply( group_mask_train_dict['diboson'], y_train==0 ) ][i]
+    
+    print "y_train.shape[0]",y_train.shape[0]
+    print "output_train[ np.multiply( group_mask_train_dict['diboson'], y_train==0 ) == 1 ].shape",output_train[ np.multiply( group_mask_train_dict['diboson'     ], y_train==0 ) == 1].shape
+    print "output_train[ np.multiply( group_mask_train_dict['Zjets'], y_train==0 ) == 1 ].shape",output_train[ np.multiply( group_mask_train_dict['Zjets'     ], y_train==0 ) == 1].shape
+    print "output_train[ np.multiply( group_mask_train_dict['ttbar'], y_train==0 ) == 1].shape",output_train[ np.multiply( group_mask_train_dict['ttbar'     ], y_train==0 ) == 1].shape
+    
+    cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    
+    axsA4.hist( output_train_group_list, 
+    		bins, 
+    		weights=[0.5*sf_bkg*ew_group for ew_group in event_weights_train_group_list], 
+    		alpha=0.5, 
+                    #color=['C0', 'C1', 'C2'],
+    		histtype='stepfilled', 
+    		stacked=True, 
+    		label=[group_name+' trained' for group_name in group_name_list] )
+    nA4, binsA4, patchesA4 = axsA4.hist( output_train[y_train==1], 
+    		bins, 
+    		weights=0.5*sf_bkg*event_weights_train[y_train==1], 
+    		alpha=0.5, 
+                    hatch='////',
+                    edgecolor=cycle[3],
+    		histtype='step',
+    		stacked=False, 
+    		label='signal trained' )
+    #patch = patches.PathPatch(patchesA4, color=cycle[3], fill=False, hatch='xx', lw=2)
+    #axsA4.add_patch(patch)
+    # Plot test output
+    plt.gca().set_prop_cycle(None)
+    axsA4.hist(  output_test_group_list, 
+    		bins, 
+    		weights=[sf_bkg*ew_group for ew_group in event_weights_test_group_list], 
+    		alpha=1, 
+                    #color=['C0', 'C1', 'C2'],
+    		histtype='step', 
+    		stacked=True, 
+    		linestyle='--',
+    		label=[group_name+' tested' for group_name in group_name_list] )
+    axsA4.hist( output_test[y_test==1], 
+    		bins, 
+    		weights=0.5*sf_bkg*event_weights_test[y_test==1], 
+    		alpha=1, 
+    		histtype='step', 
+    		stacked=False, 
+    		linestyle='--',
+    		label='signal tested' )
+    
+    if log_y: axsA4.set_yscale('log', nonposy='clip')
+    axsA4.set_ylim([0,1E5])
+    axsA4.legend(loc="best", ncol=1)
+    pdf_pages.savefig(figA4)
 
 
 # Plotting - performance curves
@@ -934,14 +1070,23 @@ N = S_optimized + B_optimized
 #print "N",N
 #print "np.sqrt(N)",np.sqrt(N)
 
-B_optimized_sumw2 = np.sum( (event_weights_test[y_test==0])**2 )#/acceptance_bkg)**2 )
-S_optimized_sumw2 = np.sum( (event_weights_test[y_test==1])**2 )#/acceptance_sig)**2 )
+sum_weights_test_bkg_int = np.sum( event_weights_test[ np.multiply(output_test>cut_optimized, y_test==0) ] )
+sum_weights_test_sig_int = np.sum( event_weights_test[ np.multiply(output_test>cut_optimized, y_test==1) ] )
+sum_weights_test_bkg_bool = np.sum( event_weights_test[ np.multiply(output_test>cut_optimized, y_test==0) == 1 ] )
+sum_weights_test_sig_bool = np.sum( event_weights_test[ np.multiply(output_test>cut_optimized, y_test==1) == 1 ] )
+print "sum_weights_test_bkg_int",sum_weights_test_bkg_int
+print "sum_weights_test_sig_int",sum_weights_test_sig_int
+print "sum_weights_test_bkg_bool",sum_weights_test_bkg_bool
+print "sum_weights_test_sig_bool",sum_weights_test_sig_bool
 
-B_optimized_sumwOverAccept2 = np.sum( (event_weights_test[y_test==0]/acceptance_bkg)**2 )
-S_optimized_sumwOverAccept2 = np.sum( (event_weights_test[y_test==1]/acceptance_sig)**2 )
+B_optimized_sumw2 = np.sum( (event_weights_test[ np.multiply(output_test>cut_optimized, y_test==0) ] )**2 )
+S_optimized_sumw2 = np.sum( (event_weights_test[ np.multiply(output_test>cut_optimized, y_test==1) ] )**2 )
 
-#print "\nevent_weights_test[event_weights_test>1.]",event_weights_test[event_weights_test>1.]
-#print "event_weights_test[y_test==1]",event_weights_test[y_test==1]
+B_optimized_sumwOverAccept2 = np.sum( (event_weights_test[ np.multiply(output_test>cut_optimized, y_test==0) ]/acceptance_bkg)**2 )
+S_optimized_sumwOverAccept2 = np.sum( (event_weights_test[ np.multiply(output_test>cut_optimized, y_test==1) ]/acceptance_sig)**2 )
+
+print "\nevent_weights_test[ np.multiply(event_weights_test>1., output_test>0.95) ]",event_weights_test[ np.multiply(event_weights_test>1., output_test>0.95) == 1 ]
+print "\nevent_weights_test[ np.multiply( np.multiply(event_weights_test>1., output_test>0.95), group_mask_test_dict['Zjets'] ) ]",event_weights_test[ np.multiply( np.multiply(event_weights_test>1., output_test>0.95), group_mask_test_dict['Zjets'] ) == 1 ]
 
 # Save SR yields in one-bin histogram
 ROOT_filename = "output_"+output_filename+".root"
@@ -982,8 +1127,8 @@ print "\n*************************************************"
 print "Optimized cut value = ",cut_optimized
 print "*************************************************"
 print "Event yields in optimized SR:"
-print "S =",S_optimized,"+/-",S_optimized_sumw2
-print "B =",B_optimized,"+/-",B_optimized_sumw2
+print "S =",S_optimized,"+/-",S_optimized_sumwOverAccept2
+print "B =",B_optimized,"+/-",B_optimized_sumwOverAccept2
 print "*************************************************"
 print "Optimized AMS score (br=0) = ",ams_optimized_br0
 print "Optimized AMS score (br=10) = ",ams_optimized_br10
