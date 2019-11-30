@@ -35,4 +35,4 @@ Open the Jupyter notebook `run_neural_network.ipynb` and run/modify the relevant
 
 ## Train/run an XGBoost BDT
 
-Open the Jupyter notebook `run_xgboost.ipnby` and run/modify the relevant cells with the appropriate options.
+Open the Jupyter notebook `run_xgboost.ipynb` and run/modify the relevant cells with the appropriate options.
